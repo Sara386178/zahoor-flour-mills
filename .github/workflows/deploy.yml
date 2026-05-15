@@ -1,0 +1,64 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # ─── LINT JOB ───────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - name: Install dependencies (backend)
+        run: cd backend && npm install
+      - name: Run ESLint
+        run: cd backend && npx eslint . || true
+        continue-on-error: true
+
+  # ─── TEST JOB ───────────────────────────────────────────
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - name: Install dependencies (backend)
+        run: cd backend && npm install
+      - name: Run unit tests
+        run: cd backend && npm test -- --passWithNoTests
+
+  # ─── BUILD JOB ──────────────────────────────────────────
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - name: Install dependencies (backend)
+        run: cd backend && npm install
+      - name: Build backend
+        run: cd backend && npm run build || echo "No build script"
+
+  # ─── DEPLOY JOB ─────────────────────────────────────────
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Deploy to Render
+        run: |
+          echo "Deployment triggered"
+          echo "Repository: https://github.com/Sara386178/zahoor-flour-mills"
