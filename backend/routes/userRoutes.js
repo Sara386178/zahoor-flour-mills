@@ -4,93 +4,157 @@ const router = express.Router();
 const User = require('../models/User');
 const { requireAdmin } = require('../middleware/auth');
 
+// ─── Helper Functions ───────────────────────────────────────────────
+const normalizeEmail = (email) => email.toLowerCase().trim();
+
+const sanitizeUser = (user) => {
+  const safe = user.toJSON();
+  delete safe.password;
+  return safe;
+};
+
+const validateRequiredFields = (fields, requiredKeys) => {
+  return requiredKeys.filter(key => !fields[key]);
+};
+
+// ─── Register New User ───────────────────────────────────────────────
 router.post('/register', async (req, res) => {
   try {
     const { name, email, phone, password } = req.body;
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: 'Name, email, and password are required' });
+
+    // Validate required fields
+    const missingFields = validateRequiredFields(req.body, ['name', 'email', 'password']);
+    if (missingFields.length > 0) {
+      return res.status(400).json({ 
+        message: `Missing required fields: ${missingFields.join(', ')}` 
+      });
     }
-    const existing = await User.findOne({ email: email.toLowerCase().trim() });
-    if (existing) {
-      return res.status(400).json({ message: 'An account with this email already exists' });
+
+    // Check if email already exists
+    const existingUser = await User.findOne({ email: normalizeEmail(email) });
+    if (existingUser) {
+      return res.status(400).json({ 
+        message: 'An account with this email already exists' 
+      });
     }
-    const hashed = await bcrypt.hash(password, 10);
-    const user = await User.create({
-      name,
-      email: email.toLowerCase().trim(),
+
+    // Hash password and create user
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = await User.create({
+      name: name.trim(),
+      email: normalizeEmail(email),
       phone: phone || undefined,
-      password: hashed,
+      password: hashedPassword,
     });
-    const safe = user.toJSON();
-    res.status(201).json(safe);
+
+    return res.status(201).json(sanitizeUser(newUser));
+
   } catch (error) {
+    // Handle duplicate email error from MongoDB
     if (error.code === 11000) {
-      return res.status(400).json({ message: 'An account with this email already exists' });
+      return res.status(400).json({ 
+        message: 'An account with this email already exists' 
+      });
     }
-    res.status(400).json({ message: error.message });
+    return res.status(500).json({ message: 'Registration failed. Please try again.' });
   }
 });
 
+// ─── Login User ──────────────────────────────────────────────────────
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+
+    // Validate required fields
     if (!email || !password) {
-      return res.status(400).json({ message: 'Email and password are required' });
+      return res.status(400).json({ 
+        message: 'Email and password are required' 
+      });
     }
-    const user = await User.findOne({ email: email.toLowerCase().trim() }).select('+password');
+
+    // Find user and verify password
+    const user = await User.findOne({ 
+      email: normalizeEmail(email) 
+    }).select('+password');
+
     if (!user) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
-    const safe = user.toJSON();
-    delete safe.password;
-    res.json(safe);
+
+    return res.json(sanitizeUser(user));
+
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    return res.status(500).json({ message: 'Login failed. Please try again.' });
   }
 });
 
+// ─── Get All Users (Admin Only) ──────────────────────────────────────
 router.get('/', requireAdmin, async (req, res) => {
   try {
-    const users = await User.find().sort({ createdAt: -1 });
-    res.json(users);
+    const users = await User.find()
+      .sort({ createdAt: -1 })
+      .select('-password'); // Never return passwords
+    return res.json(users);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    return res.status(500).json({ message: 'Failed to fetch users.' });
   }
 });
 
+// ─── Update User (Admin Only) ────────────────────────────────────────
 router.put('/:id', requireAdmin, async (req, res) => {
   try {
     const { name, phone, role, password } = req.body;
     const updates = {};
-    if (name != null) updates.name = String(name).trim();
+
+    // Only update fields that are provided
+    if (name != null)  updates.name  = String(name).trim();
     if (phone !== undefined) updates.phone = phone ? String(phone).trim() : '';
-    if (role != null) updates.role = String(role).trim().toLowerCase();
-    if (password) {
-      updates.password = await bcrypt.hash(String(password), 10);
+    if (role != null)  updates.role  = String(role).trim().toLowerCase();
+    if (password)      updates.password = await bcrypt.hash(String(password), 10);
+
+    // Check if there is anything to update
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ message: 'No valid fields provided for update' });
     }
-    const user = await User.findByIdAndUpdate(req.params.id, updates, { new: true });
-    if (!user) {
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.params.id, 
+      updates, 
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedUser) {
       return res.status(404).json({ message: 'User not found' });
     }
-    res.json(user.toJSON());
+
+    return res.json(sanitizeUser(updatedUser));
+
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    return res.status(400).json({ message: error.message });
   }
 });
 
+// ─── Delete User (Admin Only) ────────────────────────────────────────
 router.delete('/:id', requireAdmin, async (req, res) => {
   try {
-    const user = await User.findByIdAndDelete(req.params.id);
-    if (!user) {
+    const deletedUser = await User.findByIdAndDelete(req.params.id);
+
+    if (!deletedUser) {
       return res.status(404).json({ message: 'User not found' });
     }
-    res.json({ message: 'User deleted successfully' });
+
+    return res.json({ 
+      message: 'User deleted successfully',
+      deletedUserId: req.params.id 
+    });
+
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    return res.status(400).json({ message: error.message });
   }
 });
 
